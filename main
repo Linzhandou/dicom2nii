@@ -1,0 +1,157 @@
+import os
+import pydicom
+import nibabel as nib
+import numpy as np
+from tqdm import tqdm
+import shutil
+import glob
+
+def anonymize_dicom_slice(dicom_slice):
+    # 定义需要脱敏的字段列表
+    anonymize_fields = ["AccessionNumber", "PatientID", "PatientName", 
+                        "PatientBirthDate", "PatientAge", "PatientSex", 
+                        "InstitutionName", "InstitutionAddress", 
+                        "InstitutionalDepartmentName", "OperatorsName"]
+
+    for field in anonymize_fields:
+        if field in dicom_slice:
+            dicom_slice.data_element(field).value = ""
+    return dicom_slice
+
+def build_affine_matrix(dicom_slice, pixel_spacing, slice_thickness):
+    # 获取DICOM头信息中的空间定位信息
+    image_orientation = dicom_slice.ImageOrientationPatient
+    image_position = dicom_slice.ImagePositionPatient
+
+    # 计算方向向量
+    orientation_matrix = np.array(image_orientation).reshape(2, 3).T
+    row_cosine, col_cosine = orientation_matrix[:, 0], orientation_matrix[:, 1]
+
+    # 构建仿射矩阵
+    affine_matrix = np.identity(4)
+    affine_matrix[0, 0:3] = row_cosine * pixel_spacing[0]
+    affine_matrix[1, 0:3] = col_cosine * pixel_spacing[1]
+    affine_matrix[2, 0:3] = np.cross(row_cosine, col_cosine) * slice_thickness
+    affine_matrix[0:3, 3] = image_position
+
+    return affine_matrix
+
+
+def read_dicom_folder(folder_path):
+    slices = []
+    for s in os.listdir(folder_path):
+        full_s = os.path.join(folder_path, s)
+        if os.path.isfile(full_s):
+            try:
+                slice = pydicom.read_file(full_s)
+                slice = anonymize_dicom_slice(slice)  # 脱敏处理
+                slices.append(slice)
+            except:
+                print(f"Failed to read file {full_s}")
+    slices = sorted(slices, key=lambda s: s.SliceLocation)
+    return slices
+
+def convert_dicom_to_nii_pet(dicom_slices, output_filename):
+    # 确定图像的尺寸
+    image_shape = (int(dicom_slices[0].Columns), int(dicom_slices[0].Rows), len(dicom_slices))
+    image_3d = np.zeros(image_shape, dtype=np.int16)
+    
+    # 将DICOM切片转换为3D图像
+    for i, s in enumerate(dicom_slices):
+        image_2d = s.pixel_array
+        image_2d_rotated = np.rot90(image_2d)  # 逆时针旋转90度
+        image_2d_flipped = np.fliplr(image_2d_rotated)  # 水平镜像翻转
+        image_3d[:, :, i] = image_2d_flipped
+
+ 
+    pixel_spacing_pet = [4, 4]
+    slice_thickness_pet = 4
+
+    # 使用PET的像素间距和切片厚度构建仿射矩阵
+    affine = build_affine_matrix(dicom_slices[0], pixel_spacing_pet, slice_thickness_pet)
+
+    # 创建NIfTI图像并保存
+    nii_image = nib.Nifti1Image(image_3d, affine)
+    nib.save(nii_image, output_filename)
+
+def convert_dicom_to_nii_ct(dicom_slices, output_filename):
+    # 确定图像的尺寸
+    image_shape = (int(dicom_slices[0].Columns), int(dicom_slices[0].Rows), len(dicom_slices))
+    image_3d = np.zeros(image_shape, dtype=np.int16)
+
+    # 将DICOM切片转换为3D图像
+    for i, s in enumerate(dicom_slices):
+        image_2d = s.pixel_array
+        image_2d_rotated = np.rot90(image_2d)  # 逆时针旋转90度
+        image_2d_flipped = np.fliplr(image_2d_rotated)  # 水平镜像翻转
+        image_3d[:, :, i] = image_2d_flipped
+
+    pixel_spacing_ct = [1.172, 1.172]
+    slice_thickness_ct = 5
+
+    # 使用CT的像素间距和切片厚度构建仿射矩阵
+    affine = build_affine_matrix(dicom_slices[0], pixel_spacing_ct, slice_thickness_ct)
+
+    # 创建NIfTI图像并保存
+    nii_image = nib.Nifti1Image(image_3d, affine)
+    nib.save(nii_image, output_filename)
+
+
+def process_nii_image(input_filename, output_filename):
+    # 加载NIfTI图像
+    nii_image = nib.load(input_filename)
+    image_data = nii_image.get_fdata()
+
+    # 创建一个与原图像形状相同的新数组
+    processed_image_data = np.zeros_like(image_data)
+
+    # 对图像的每个切片进行逆时针旋转90度和水平镜像翻转
+    for i in range(image_data.shape[-1]):
+        image_2d = image_data[:, :, i]
+          # 逆时针旋转90度
+        image_2d_flipped = np.flip(image_2d)  # 水平镜像翻转
+        processed_image_data[:, :, i] = image_2d_flipped
+
+    # 创建新的NIfTI图像并保存
+    new_nii_image = nib.Nifti1Image(processed_image_data, nii_image.affine)
+    nib.save(new_nii_image, output_filename)
+
+def convert_patient_folders(src_folder, dest_folder):
+    if not os.path.exists(dest_folder):
+        os.makedirs(dest_folder)
+
+    for patient_folder in os.listdir(src_folder):
+        patient_path = os.path.join(src_folder, patient_folder)
+        new_patient_path = os.path.join(dest_folder, patient_folder)
+        if os.path.isdir(patient_path):
+            if not os.path.exists(new_patient_path):
+                os.makedirs(new_patient_path)
+
+            for modality in ['CT', 'pet']:
+                modality_folder = os.path.join(patient_path, modality)
+                new_modality_folder = os.path.join(new_patient_path, modality)
+                if os.path.exists(modality_folder):
+                    dicom_slices = read_dicom_folder(modality_folder)
+                    if dicom_slices:
+                        nii_filename = os.path.join(new_modality_folder, f'{modality}.nii.gz')
+                        os.makedirs(new_modality_folder, exist_ok=True)
+                        if modality == 'CT':
+                            convert_dicom_to_nii_ct(dicom_slices, nii_filename)
+                        elif modality == 'pet':
+                            convert_dicom_to_nii_pet(dicom_slices, nii_filename)
+
+            # 处理seg文件夹中的nii图像
+            seg_folder = os.path.join(patient_path, "Seg")
+            new_seg_folder = os.path.join(new_patient_path, "Seg")
+            if os.path.exists(seg_folder):
+                shutil.copytree(seg_folder, new_seg_folder, dirs_exist_ok=True)
+                for file in os.listdir(new_seg_folder):
+                    if file.endswith('.nii') or file.endswith('.nii.gz'):
+                        input_file = os.path.join(new_seg_folder, file)
+                        output_file = os.path.join(new_seg_folder, f'processed_{file}')
+                        process_nii_image(input_file, output_file)
+
+# 示例用法
+src_folder = r"C:\Users\92814\Desktop\外验证reorder"  # 您的源文件夹
+dest_folder = r"C:\Users\92814\Desktop\外验证"  # 目标文件夹（可以根据需要更改）
+convert_patient_folders(src_folder, dest_folder)
