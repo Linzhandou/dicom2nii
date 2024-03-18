@@ -63,7 +63,7 @@ def convert_dicom_to_nii_pet(dicom_slices, output_filename):
         image_2d_flipped = np.fliplr(image_2d_rotated)  # 水平镜像翻转
         image_3d[:, :, i] = image_2d_flipped
 
- 
+    # 非常重要，修改为原spacing和thickness
     pixel_spacing_pet = [4, 4]
     slice_thickness_pet = 4
 
@@ -86,6 +86,7 @@ def convert_dicom_to_nii_ct(dicom_slices, output_filename):
         image_2d_flipped = np.fliplr(image_2d_rotated)  # 水平镜像翻转
         image_3d[:, :, i] = image_2d_flipped
 
+    # 非常重要，修改为原spacing和thickness
     pixel_spacing_ct = [1.172, 1.172]
     slice_thickness_ct = 5
 
@@ -152,6 +153,6 @@ def convert_patient_folders(src_folder, dest_folder):
                         process_nii_image(input_file, output_file)
 
 # 示例用法
-src_folder = r"C:\Users\92814\Desktop\外验证reorder"  # 您的源文件夹
-dest_folder = r"C:\Users\92814\Desktop\外验证"  # 目标文件夹（可以根据需要更改）
+src_folder = r""  # 您的源文件夹
+dest_folder = r""  # 目标文件夹（可以根据需要更改）
 convert_patient_folders(src_folder, dest_folder)
